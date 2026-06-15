@@ -33,50 +33,35 @@ const INV_LABEL = { R:"Root position", T:"1st inversion", F:"2nd inversion" };
 const INV_ORDER = { R:["R","T","F"], T:["T","F","R"], F:["F","R","T"] }; // low → high
 
 /* ─── Shape computation ────────────────────────────────────────────────────── */
-function lowestOnString(stringIdx, pc, minMidi) {
-  const base = OPEN_MIDI[stringIdx];
-  let f = (((pc - base) % 12) + 12) % 12;
-  let midi = base + f;
-  while (midi < minMidi) { midi += 12; f += 12; }
-  return { fret: f, midi };
+// Ascending voice offsets (semitones above the root pitch) for each inversion.
+function voicingOffsets(inv, i1, i2) {
+  if (inv === "R") return [{ voice:"R", off:0 },  { voice:"T", off:i1 }, { voice:"F", off:i2 }];
+  if (inv === "T") return [{ voice:"T", off:i1 }, { voice:"F", off:i2 }, { voice:"R", off:12 }];
+  return                  [{ voice:"F", off:i2 }, { voice:"R", off:12 }, { voice:"T", off:12 + i1 }];
 }
 
-function pcForVoice(v, rootPC, intervals) {
-  if (v === "R") return rootPC;
-  if (v === "T") return (rootPC + intervals[1]) % 12;
-  return (rootPC + intervals[2]) % 12;
-}
-
-function placeTriad(strings, order, rootPC, intervals, minBottomMidi) {
-  const dots = [];
-  let minMidi = minBottomMidi;
-  for (let i = 0; i < 3; i++) {
-    const v = order[i];
-    const { fret, midi } = lowestOnString(strings[i], pcForVoice(v, rootPC, intervals), minMidi);
-    dots.push({ string: strings[i], fret, midi, voice: v, note: NOTES[(OPEN_MIDI[strings[i]] + fret) % 12] });
-    minMidi = midi + 1;
-  }
-  return dots;
-}
-
-// Three inversions climbing the neck from the lowest chord tone on the bottom string.
-function computeShapes(setStrings, rootPC, intervals) {
-  const bottom = setStrings[0];
-  const base = OPEN_MIDI[bottom];
-  const voiceByPC = {};
-  voiceByPC[rootPC] = "R";
-  voiceByPC[(rootPC + intervals[1]) % 12] = "T";
-  voiceByPC[(rootPC + intervals[2]) % 12] = "F";
-  const shapes = [];
-  const seen = new Set();
-  for (let f = 0; f <= 18 && shapes.length < 3; f++) {
-    const v = voiceByPC[(base + f) % 12];
-    if (v && !seen.has(v)) {
-      seen.add(v);
-      shapes.push({ inversion: v, dots: placeTriad(setStrings, INV_ORDER[v], rootPC, intervals, base + f) });
+// Place one closed triad inversion at its lowest fretted position (all frets 1..16, no open strings).
+function placeTriad(strings, inv, rootPC, intervals) {
+  const vo = voicingOffsets(inv, intervals[1], intervals[2]);
+  const Pbase = 36 + rootPC; // a root pitch carrying the right pitch class (C2-based)
+  for (let oct = 0; oct <= 5; oct++) {
+    const P = Pbase + 12 * oct;
+    const frets = vo.map((x, k) => P + x.off - OPEN_MIDI[strings[k]]);
+    if (frets.every(f => f >= 1 && f <= 16)) {
+      return vo.map((x, k) => ({
+        string: strings[k], fret: frets[k], midi: P + x.off,
+        voice: x.voice, note: NOTES[(P + x.off) % 12],
+      }));
     }
   }
-  return shapes.sort((a, b) => a.dots[0].fret - b.dots[0].fret);
+  return null;
+}
+
+function computeShapes(setStrings, rootPC, intervals) {
+  return ["R", "T", "F"]
+    .map(inv => ({ inversion: inv, dots: placeTriad(setStrings, inv, rootPC, intervals) }))
+    .filter(s => s.dots)
+    .sort((a, b) => Math.min(...a.dots.map(d => d.fret)) - Math.min(...b.dots.map(d => d.fret)));
 }
 
 /* ─── Theme ────────────────────────────────────────────────────────────────── */
@@ -110,10 +95,9 @@ export default function TriadMapper() {
   const shapes    = computeShapes(stringSet.strings, rootPC, quality.intervals);
   const allDots   = shapes.flatMap(s => s.dots.map(d => ({ ...d, inversion: s.inversion })));
 
-  const minF = Math.min(...allDots.map(d => d.fret));
   const maxF = Math.max(...allDots.map(d => d.fret));
-  const startF = Math.max(0, minF - 1);
-  const endF = maxF + 1;
+  const startF = 1;
+  const endF = Math.max(12, maxF);
   const frets = [];
   for (let f = startF; f <= endF; f++) frets.push(f);
 
